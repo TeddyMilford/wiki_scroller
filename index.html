@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wiki Scroll</title>
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Wiki Scroll">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #000; color: #fff; }
+  body { font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+
+  #feed {
+    height: 100dvh;
+    overflow-y: scroll;
+    scroll-snap-type: y mandatory;
+    overscroll-behavior: contain;
+  }
+  .card {
+    position: relative;
+    height: 100dvh;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+  }
+  .card .bg {
+    position: absolute; inset: 0;
+    background-size: cover; background-position: center;
+    filter: brightness(.55);
+  }
+  .card.noimg .bg { background: linear-gradient(160deg, #1d2b3a, #0b0f14); filter: none; }
+  .card .body {
+    position: relative;
+    padding: 24px 20px calc(28px + env(safe-area-inset-bottom));
+    background: linear-gradient(transparent, rgba(0,0,0,.85) 30%);
+  }
+  .card h2 { font-size: 28px; line-height: 1.15; margin-bottom: 4px; }
+  .card .desc { color: #bbb; font-size: 14px; margin-bottom: 12px; }
+  .card p { max-height: 45dvh; overflow-y: auto; }
+  .card a.more {
+    display: inline-block; margin-top: 14px;
+    color: #fff; text-decoration: none;
+    border: 1px solid rgba(255,255,255,.5); border-radius: 999px;
+    padding: 6px 14px; font-size: 14px;
+  }
+  .status { height: 100dvh; display: grid; place-items: center; color: #888; scroll-snap-align: start; }
+</style>
+</head>
+<body>
+<main id="feed"></main>
+<script>
+  const feed = document.getElementById("feed");
+  const API = "https://en.wikipedia.org/w/api.php?" + new URLSearchParams({
+    action: "query", format: "json", origin: "*",
+    generator: "random", grnnamespace: 0, grnlimit: 10,
+    prop: "extracts|pageimages|description|info",
+    exintro: 1, explaintext: 1, exlimit: 10, exsentences: 6,
+    piprop: "thumbnail", pithumbsize: 1000, inprop: "url",
+  });
+
+  let loading = false;
+  const status = document.createElement("div");
+  status.className = "status";
+  status.textContent = "Loading…";
+  feed.append(status);
+
+  async function loadMore() {
+    if (loading) return;
+    loading = true;
+    try {
+      const res = await fetch(API);
+      const data = await res.json();
+      const pages = Object.values(data.query.pages).filter(p => p.extract && p.extract.length > 80);
+      for (const p of pages) feed.insertBefore(card(p), status);
+    } catch (e) {
+      status.textContent = "Couldn't reach Wikipedia. Scroll to retry.";
+    }
+    loading = false;
+  }
+
+  function card(p) {
+    const el = document.createElement("article");
+    el.className = "card" + (p.thumbnail ? "" : " noimg");
+    const bg = document.createElement("div");
+    bg.className = "bg";
+    if (p.thumbnail) bg.style.backgroundImage = `url("${p.thumbnail.source}")`;
+    const body = document.createElement("div");
+    body.className = "body";
+    const h = document.createElement("h2");
+    h.textContent = p.title;
+    body.append(h);
+    if (p.description) {
+      const d = document.createElement("div");
+      d.className = "desc";
+      d.textContent = p.description;
+      body.append(d);
+    }
+    const t = document.createElement("p");
+    t.textContent = p.extract;
+    const a = document.createElement("a");
+    a.className = "more";
+    a.href = p.fullurl;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Read article →";
+    body.append(t, a);
+    el.append(bg, body);
+    return el;
+  }
+
+  // Fetch the next batch when you're a few cards from the end.
+  new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) loadMore();
+  }, { root: feed, rootMargin: "0px 0px 300% 0px" }).observe(status);
+
+  loadMore();
+</script>
+</body>
+</html>
