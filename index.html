@@ -4,126 +4,219 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Wiki Scroll</title>
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#ffffff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Wiki Scroll">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
 <link rel="manifest" href="manifest.webmanifest">
 <style>
+  /* Wikipedia's look: white page, serif titles over a gray rule, blue links. */
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: #000; color: #fff; }
-  body { font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  html, body { height: 100%; }
+  body {
+    background: #fff; color: #202122; overflow: hidden;
+    font: 18px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: #36c; text-decoration: none; }
 
-  #feed {
-    height: 100dvh;
-    overflow-y: scroll;
-    scroll-snap-type: y mandatory;
-    overscroll-behavior: contain;
-  }
+  /* A pager that moves exactly one article per swipe, like TikTok. */
+  #feed { height: 100dvh; position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #track { will-change: transform; }
+  #track.animate { transition: transform 320ms cubic-bezier(.22, .8, .3, 1); }
+
   .card {
-    position: relative;
-    height: 100dvh;
-    scroll-snap-align: start;
-    scroll-snap-stop: always;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
     overflow: hidden;
+    padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
   }
-  .card .bg {
-    position: absolute; inset: 0;
-    background-size: cover; background-position: center;
-    filter: brightness(.55);
+  /* The whole card is the link; title and summary are centered together as one block. */
+  .card .inner { display: flex; flex-direction: column; justify-content: center; height: 100%; max-width: 640px; margin: 0 auto; color: inherit; }
+  .card h1 {
+    font-family: "Linux Libertine", "Georgia", "Times", serif; font-weight: normal;
+    font-size: 30px; line-height: 1.25;
+    border-bottom: 1px solid #a2a9b1; padding-bottom: 4px;
   }
-  .card.noimg .bg { background: linear-gradient(160deg, #1d2b3a, #0b0f14); filter: none; }
-  .card .body {
-    position: relative;
-    padding: 24px 20px calc(28px + env(safe-area-inset-bottom));
-    background: linear-gradient(transparent, rgba(0,0,0,.85) 30%);
+  .card .from { font-size: 13px; color: #54595d; margin: 6px 0 16px; }
+  .card .from .star { color: #b8860b; }
+
+  .status { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; color: #54595d; }
+  .status button {
+    font: inherit; font-size: 14px; font-weight: bold; color: #202122;
+    background: #f8f9fa; border: 1px solid #a2a9b1; border-radius: 2px; padding: 6px 14px;
   }
-  .card h2 { font-size: 28px; line-height: 1.15; margin-bottom: 4px; }
-  .card .desc { color: #bbb; font-size: 14px; margin-bottom: 12px; }
-  .card p { max-height: 45dvh; overflow-y: auto; }
-  .card a.more {
-    display: inline-block; margin-top: 14px;
-    color: #fff; text-decoration: none;
-    border: 1px solid rgba(255,255,255,.5); border-radius: 999px;
-    padding: 6px 14px; font-size: 14px;
-  }
-  .status { height: 100dvh; display: grid; place-items: center; color: #888; scroll-snap-align: start; }
 </style>
 </head>
 <body>
-<main id="feed"></main>
+<main id="feed"><div id="track"></div></main>
+
 <script>
-  const feed = document.getElementById("feed");
+  const WORDS = 100;     // how much of the summary to show
+  const AHEAD = 4;       // keep this many articles ready past the current one
+
+  const feed = document.getElementById("feed"), track = document.getElementById("track");
+
+  // ---------- Random featured articles ----------
+  // Wikipedia's search can filter to the Featured articles category and shuffle the results.
+
   const API = "https://en.wikipedia.org/w/api.php?" + new URLSearchParams({
-    action: "query", format: "json", origin: "*",
-    generator: "random", grnnamespace: 0, grnlimit: 10,
-    prop: "extracts|pageimages|description|info",
-    exintro: 1, explaintext: 1, exlimit: 10, exsentences: 6,
-    piprop: "thumbnail", pithumbsize: 1000, inprop: "url",
+    action: "query", format: "json", formatversion: 2, origin: "*",
+    generator: "search", gsrsearch: "incategory:Featured_articles", gsrsort: "random",
+    gsrnamespace: 0, gsrlimit: 20,
+    prop: "extracts|info", exintro: 1, explaintext: 1, exlimit: 20, inprop: "url",
   });
 
-  let loading = false;
-  const status = document.createElement("div");
-  status.className = "status";
-  status.textContent = "Loading…";
-  feed.append(status);
+  const pool = [], seen = new Set();
 
-  async function loadMore() {
-    if (loading) return;
-    loading = true;
-    try {
+  async function nextArticle() {
+    while (!pool.length) {
       const res = await fetch(API);
+      if (!res.ok) throw new Error("Wikipedia returned " + res.status);
       const data = await res.json();
-      const pages = Object.values(data.query.pages).filter(p => p.extract && p.extract.length > 80);
-      for (const p of pages) feed.insertBefore(card(p), status);
-    } catch (e) {
-      status.textContent = "Couldn't reach Wikipedia. Scroll to retry.";
+      for (const p of data.query.pages) if (p.extract && !seen.has(p.pageid)) pool.push(p);
     }
-    loading = false;
+    const p = pool.shift();
+    seen.add(p.pageid);
+    return p;
   }
 
-  function card(p) {
+  function summary(text) {
+    const words = text.replace(/\s+/g, " ").trim().split(" ");
+    return words.length > WORDS ? words.slice(0, WORDS).join(" ") + "…" : words.join(" ");
+  }
+
+  // ---------- Feed ----------
+
+  let cards = [], index = 0, height, filling;
+  const status = document.createElement("div");
+  status.className = "status";
+  track.append(status);
+
+  function card(page) {
     const el = document.createElement("article");
-    el.className = "card" + (p.thumbnail ? "" : " noimg");
-    const bg = document.createElement("div");
-    bg.className = "bg";
-    if (p.thumbnail) bg.style.backgroundImage = `url("${p.thumbnail.source}")`;
-    const body = document.createElement("div");
-    body.className = "body";
-    const h = document.createElement("h2");
-    h.textContent = p.title;
-    body.append(h);
-    if (p.description) {
-      const d = document.createElement("div");
-      d.className = "desc";
-      d.textContent = p.description;
-      body.append(d);
-    }
-    const t = document.createElement("p");
-    t.textContent = p.extract;
-    const a = document.createElement("a");
-    a.className = "more";
-    a.href = p.fullurl;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = "Read article →";
-    body.append(t, a);
-    el.append(bg, body);
+    el.className = "card";
+    const inner = document.createElement("a");
+    inner.className = "inner";
+    inner.href = page.fullurl;
+    inner.target = "_blank";
+    inner.rel = "noopener";
+
+    const h = document.createElement("h1");
+    h.textContent = page.title;
+
+    const from = document.createElement("div");
+    from.className = "from";
+    from.innerHTML = 'From Wikipedia, the free encyclopedia · <span class="star">★ Featured article</span>';
+
+    const p = document.createElement("p");
+    p.textContent = summary(page.extract);
+
+    inner.append(h, from, p);
+    el.append(inner);
+    el.style.height = height + "px";
     return el;
   }
 
-  // Fetch the next batch when you're a few cards from the end.
-  new IntersectionObserver(entries => {
-    if (entries.some(e => e.isIntersecting)) loadMore();
-  }, { root: feed, rootMargin: "0px 0px 300% 0px" }).observe(status);
+  function showStatus(message, retry) {
+    status.replaceChildren(message);
+    if (retry) {
+      const b = document.createElement("button");
+      b.textContent = "Try again";
+      b.onclick = topUp;
+      status.append(b);
+    }
+  }
 
-  loadMore();
+  async function topUp() {
+    if (filling) return;
+    filling = true;
+    showStatus("Loading…");
+    try {
+      while (cards.length - index <= AHEAD) {
+        const el = card(await nextArticle());
+        track.insertBefore(el, status);
+        cards.push(el);
+      }
+    } catch (e) {
+      showStatus("Couldn't load articles from Wikipedia (" + e.message + ").", true);
+    }
+    filling = false;
+  }
+
+  // Positions the track so the current card fills the screen.
+  function layout(animate, dragOffset = 0) {
+    height = feed.clientHeight;
+    for (const el of track.children) el.style.height = height + "px";
+    track.classList.toggle("animate", animate);
+    track.style.transform = `translate3d(0, ${-index * height + dragOffset}px, 0)`;
+  }
+
+  function goTo(i) {
+    index = Math.max(0, Math.min(i, cards.length));   // cards.length = the loading/status card
+    layout(true);
+    topUp();
+  }
+
+  window.addEventListener("resize", () => layout(false));
+
+  // Touch: the card follows your finger, then snaps to the next one on a
+  // short flick or a drag past 20% of the screen, otherwise springs back.
+  let drag = null, dragged = false;
+  feed.addEventListener("pointerdown", e => {
+    if (e.pointerType === "mouse") return;
+    drag = { y: e.clientY, samples: [[e.timeStamp, e.clientY]] };
+    dragged = false;
+  });
+  feed.addEventListener("pointermove", e => {
+    if (!drag) return;
+    let dy = e.clientY - drag.y;
+    if (Math.abs(dy) > 8) dragged = true;
+    if ((index === 0 && dy > 0) || (index === cards.length && dy < 0)) dy *= 0.3;  // resist at the ends
+    drag.samples.push([e.timeStamp, e.clientY]);
+    if (drag.samples.length > 5) drag.samples.shift();
+    layout(false, dy);
+  });
+  function endDrag(e) {
+    if (!drag) return;
+    const dy = e.clientY - drag.y;
+    const [t0, y0] = drag.samples[0];
+    const velocity = (e.clientY - y0) / Math.max(1, e.timeStamp - t0);  // px per ms
+    drag = null;
+    if (dy < -height * 0.2 || velocity < -0.35) goTo(index + 1);
+    else if (dy > height * 0.2 || velocity > 0.35) goTo(index - 1);
+    else layout(true);
+  }
+  feed.addEventListener("pointerup", endDrag);
+  feed.addEventListener("pointercancel", endDrag);
+
+  // A drag shouldn't count as a tap on the article.
+  feed.addEventListener("click", e => {
+    if (dragged) { e.preventDefault(); dragged = false; }
+  }, true);
+
+  // Mouse wheel / trackpad: one article per gesture. Momentum from the same
+  // gesture is ignored until the wheel goes quiet.
+  let wheelSum = 0, wheelLocked = false, wheelTimer;
+  feed.addEventListener("wheel", e => {
+    e.preventDefault();
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(() => { wheelLocked = false; wheelSum = 0; }, 160);
+    if (wheelLocked) return;
+    wheelSum += e.deltaY;
+    if (Math.abs(wheelSum) > 30) {
+      goTo(index + Math.sign(wheelSum));
+      wheelLocked = true;
+    }
+  }, { passive: false });
+
+  document.addEventListener("keydown", e => {
+    if (["ArrowDown", "PageDown", " "].includes(e.key)) { e.preventDefault(); goTo(index + 1); }
+    if (["ArrowUp", "PageUp"].includes(e.key)) { e.preventDefault(); goTo(index - 1); }
+  });
+
+  layout(false);
+  topUp();
 </script>
 </body>
 </html>
